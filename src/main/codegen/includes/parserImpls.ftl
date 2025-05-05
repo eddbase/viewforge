@@ -15,7 +15,72 @@
 // limitations under the License.
 -->
 
+SqlDdl SqlCreateCatalog() :
+{
+    final Span s;
+    final SqlIdentifier id;
+    final SqlNodeList params;
+}
+{
+    <CREATE> { s = span(); }
+    <CATALOG> id = SimpleIdentifier()
+    (
+        LOOKAHEAD(2)
+        params = ParenthesizedKeyValueOptionCommaList()
+      |
+        [ <LPAREN> <RPAREN> ] { params = SqlNodeList.EMPTY; }
+    )
+    {
+        return new SqlCreateCatalog(s.end(this), id, params);
+    }
+}
+
+SqlDdl SqlCreateStream() :
+{
+    final Span s;
+    final SqlIdentifier id;
+    final SqlIdentifier source;
+    final SqlNodeList params;
+}
+{
+    <CREATE> { s = span(); }
+    <STREAM> id = SimpleIdentifier()
+    <FROM> source = CompoundIdentifier()
+    (
+        LOOKAHEAD(2)
+        params = ParenthesizedKeyValueOptionCommaList()
+      |
+        [ <LPAREN> <RPAREN> ] { params = SqlNodeList.EMPTY; }
+    )
+    {
+        return new SqlCreateStream(s.end(this), id, source, params);
+    }
+}
+
+SqlDdl SqlCreateView() :
+{
+    final Span s;
+    final SqlIdentifier id;
+    final SqlNodeList params;
+    final SqlNode query;
+}
+{
+    <CREATE> { s = span(); }
+    <VIEW> id = SimpleIdentifier()
+    (
+        LOOKAHEAD(2)
+        params = ParenthesizedKeyValueOptionCommaList()
+      |
+        [ <LPAREN> <RPAREN> ] { params = SqlNodeList.EMPTY; }
+    )
+    <AS> query = OrderedQueryOrExpr(ExprContext.ACCEPT_QUERY)
+    {
+        return new SqlCreateView(s.end(this), id, params, query);
+    }
+}
+
 <#--
+
   Add implementations of additional parser statements, literals or
   data types.
 

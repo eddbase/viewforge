@@ -43,6 +43,31 @@ data: {
     package: "eddbase.parser.impl",
     class: "SqlParserImpl",
 
+    # List of additional classes and packages to import.
+    # Example: "org.apache.calcite.sql.*", "java.util.List".
+    imports: [
+      "org.apache.calcite.sql.SqlDdl"
+      "eddbase.parser.SqlCreateCatalog"
+      "eddbase.parser.SqlCreateStream"
+      "eddbase.parser.SqlCreateView"
+    ]
+
+    # List of new keywords. Example: "DATABASES", "TABLES". If the keyword is
+    # not a reserved keyword, add it to the 'nonReservedKeywords' section.
+    keywords: [
+      "ICEBERG"
+      "FILE"
+    ]
+
+    # List of methods for parsing custom SQL statements.
+    # Return type of method implementation should be 'SqlNode'.
+    # Example: "SqlShowDatabases()", "SqlShowTables()".
+    statementParserMethods: [
+      "SqlCreateCatalog()"
+      "SqlCreateStream()"
+      "SqlCreateView()"
+    ]
+
     # List of files in @includes directory that have parser method
     # implementations for parsing custom SQL statements, literals or types
     # given as part of "statementParserMethods", "literalParserMethods" or
