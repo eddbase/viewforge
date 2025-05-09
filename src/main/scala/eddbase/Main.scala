@@ -1,21 +1,51 @@
 package eddbase
 
-import eddbase.dsl.{Catalog, Program, Stream, View}
-import eddbase.dsl.Helpers.SqlNodeImplicit
-import eddbase.parser.{SqlCreateCatalog, SqlCreateStream, SqlCreateView}
+import eddbase.codegen.PySparkCodeGenerator
+import eddbase.pipeline.PipelineBuilder
 import org.apache.calcite.config.Lex
 import org.apache.calcite.sql.parser.SqlParser
 
+import java.io.PrintWriter
+import scala.io.Source
+import scala.jdk.CollectionConverters.IterableHasAsScala
+
 object Main {
   def main(args: Array[String]): Unit = {
-//    testCalcite()
-    testCalciteExtension()
+    val sql = Source.fromFile("pipeline.sql").getLines().mkString("\n")
+
+    val parserConfig = SqlParser.config()
+      .withLex(Lex.MYSQL)
+      .withParserFactory(eddbase.parser.impl.SqlParserImpl.FACTORY)
+
+    // Create the parser
+    val parser = SqlParser.create(sql, parserConfig)
+
+    // Parse the SQL
+    val nodeList = parser.parseStmtList()
+
+    // Print the parsed output
+    println("Parsed SQL:")
+    println(nodeList.toString)
+
+    val (nodes, _) = PipelineBuilder.build(nodeList.getList.asScala.toList)
+    nodes.foreach(n => println(n))
+
+    val cg = new PySparkCodeGenerator
+    val code = cg.codegen(nodes, "SparkExample")
+    println(code)
+
+    val writer = new PrintWriter("pipeline.py")
+    writer.println(code)
+    writer.close()
+
+    //    testCalcite()
+    //    testCalciteExtension()
   }
 
   def testCalcite(): Unit = {
     val sql = "SELECT id, name FROM employees WHERE department = 'Engineering'"
 
-    val parserConfig = SqlParser.config().withLex(Lex.MYSQL);
+    val parserConfig = SqlParser.config().withLex(Lex.MYSQL)
 
     // Create the parser
     val parser = SqlParser.create(sql, parserConfig)
@@ -37,13 +67,16 @@ object Main {
           |  WAREHOUSE = 's3a://warehouse'
           |);
           |
-          |CREATE CATALOG test (
-          |  TYPE = 'file'
+          |CREATE CATALOG pg_catalog (
+          |  TYPE = 'database',
+          |  URL = 'postgres url',
+          |  USERNAME = 'test',
+          |  PASSWORD = '1234'
           |);
           |
-          |CREATE STREAM OrderTbl FROM my_nessie.OrderTable;
+          |CREATE STREAM OrderTbl FROM pg_catalog.retailer.OrderTable;
           |
-          |CREATE STREAM PgOrderTbl FROM pg_catalog.OrderTable (
+          |CREATE STREAM PgOrderTbl FROM pg_catalog.shopping.Customer (
           |  CDC_TIMESTAMP = 'last_update_date'
           |);
           |
@@ -53,12 +86,12 @@ object Main {
           |)
           |AS
           |  SELECT header.last_update_date
-          |  FROM OrderTbl;
+          |  FROM OrderTbl AS O JOIN pg_catalog.retailer.Employee ON O.A = pg_catalog.retailer.Employee.id;
           |""".stripMargin
 
     val parserConfig = SqlParser.config()
       .withLex(Lex.MYSQL)
-      .withParserFactory(eddbase.parser.impl.SqlParserImpl.FACTORY);
+      .withParserFactory(eddbase.parser.impl.SqlParserImpl.FACTORY)
 
     // Create the parser
     val parser = SqlParser.create(sql, parserConfig)
@@ -70,22 +103,12 @@ object Main {
     println("Parsed SQL:")
     println(nodeList.toString)
 
-    val catalogs = nodeList.collect {
-      case s: SqlCreateCatalog => List(Catalog.fromSqlStatement(s))
-    }
+    val (nodes, _) = PipelineBuilder.build(nodeList.getList.asScala.toList)
+    nodes.foreach(n => println(n))
 
-    val streams = nodeList.collect {
-      case s: SqlCreateStream => List(Stream.fromSqlStatement(s))
-    }
+    val cg = new PySparkCodeGenerator
+    val code = cg.codegen(nodes, "SparkExample")
+    println(code)
 
-    val views = nodeList.collect {
-      case s: SqlCreateView => List(View.fromSqlStatement(s))
-    }
-
-    val program = new Program(catalogs, streams, views)
-    println(program)
-
-    val codeGenerator = new CodeGenerator(program)
-    codeGenerator.run()
   }
 }
