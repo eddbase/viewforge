@@ -143,7 +143,6 @@ def execute_view_logic_stateful(view_name: str, dag_id: str, base_refresh_rate_s
     # Decide if we should run based on the counter
     should_run = (counter % view_refresh_rate == 0)
 
-    # *** FIX ***: Increment the counter and save state immediately, *before* any long-running work.
     # This makes the "check and increment" operation atomic for each task run.
     runtime_info[view_name]["counter"] += 1
     Variable.set(runtime_variable_key, runtime_info, serialize_json=True)
@@ -208,7 +207,6 @@ def execute_view_logic_stateful(view_name: str, dag_id: str, base_refresh_rate_s
         # The counter is already updated, so we just need to update the timestamp.
         print(f"Successfully executed '{view_name}'. Updating timestamp.")
         # We need to read the variable again in case another task modified it.
-        # This is less critical but good practice.
         current_runtime_info = Variable.get(runtime_variable_key, deserialize_json=True)
         current_runtime_info[view_name]["last_update_time"] = pendulum.now().isoformat()
         Variable.set(runtime_variable_key, current_runtime_info, serialize_json=True)

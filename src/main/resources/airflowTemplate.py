@@ -16,61 +16,7 @@ SPARK_JARS_PATH = "/home/moham/spark-3.5.5-bin-hadoop3/jars/postgresql-42.7.5.ja
 # SECTION 1: METADATA LAYER
 # =============================================================================
 
-DSL_METADATA = {
-    "catalogs": {
-        "my_nessie": {
-                "type": "iceberg",
-                "sub_type": "nessie",
-                "config": {
-                    "URI": "nessie_url",
-                    "WAREHOUSE": "s3a://warehouse"
-                }
-            },
-        "pg_catalog": {
-                "type": "database",
-                
-                "config": {
-                    "url": "jdbc:postgresql://localhost:5432/tpch",
-                    "driver": "org.postgresql.Driver",
-                    "user": "postgres",
-                    "password": "zxcv"
-                }
-            }
-    },
-    "sources": {
-        "OrderStream": {"catalog": "pg_catalog", "table": "Orders"},
-        "LineitemStream": {"catalog": "pg_catalog", "table": "Lineitem"},
-        "Customer": {"catalog": "pg_catalog", "table": "Customer"}
-    },
-    "views": {
-        "OrderCustomer": {
-            "target_lag": "1 minute",
-                "depends_on": [],
-                "dataset_uri": "view://ordercustomer",
-                "query": """
-                        SELECT `O`.`o_orderkey`, `O`.`o_orderdate`, `O`.`o_shippriority`, COUNT(*) AS `cnt`
-                        FROM `OrderStream` AS `O`
-                        INNER JOIN `Customer` AS `C` ON `O`.`o_custkey` = `C`.`c_custkey`
-                        WHERE `C`.`c_mktsegment` = 'BUILDING' AND `O`.`o_orderdate` < `DATE`('1995-03-15')
-                        GROUP BY `O`.`o_orderkey`, `O`.`o_orderdate`, `O`.`o_shippriority`
-                    """,
-                "materialize": {"type": "xcom"}
-            },
-        "TPCH3": {
-            "target_lag": "2 minute",
-                "depends_on": ["OrderCustomer"],
-                "dataset_uri": "view://tpch3",
-                "query": """
-                        SELECT `OC`.`o_orderkey`, `OC`.`o_orderdate`, `OC`.`o_shippriority`, SUM(`cnt` * `L`.`l_extendedprice` * (1 - `L`.`l_discount`)) AS `revenue`
-                        FROM `LineitemStream` AS `L`
-                        INNER JOIN `OrderCustomer` AS `OC` ON `L`.`l_orderkey` = `OC`.`o_orderkey`
-                        WHERE `L`.`l_shipdate` > `DATE`('1995-03-15')
-                        GROUP BY `OC`.`o_orderkey`, `OC`.`o_orderdate`, `OC`.`o_shippriority`
-                    """,
-                "materialize": {"type": "sink", "catalog": "pg_catalog", "table": "TPCH3"}
-            }
-    }
-}
+##METADATA_PLACEHOLDER##
 
 # =============================================================================
 # SECTION 2: GENERIC EXECUTION ENGINE
@@ -319,4 +265,3 @@ def create_dag_for_pipeline(sink_view_name, sink_view_meta):
 for view_name, view_meta in DSL_METADATA["views"].items():
     if view_meta["materialize"]["type"] == "sink":
         globals()[f"dag_for_{view_name}"] = create_dag_for_pipeline(view_name, view_meta)
-

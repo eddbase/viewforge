@@ -7,13 +7,15 @@ CREATE CATALOG my_nessie (
 
 CREATE CATALOG pg_catalog (
   TYPE = 'database',
-  URL = 'jdbc:postgresql://localhost:5432/postgres',
-  DRIVER = 'org.postgresql.Driver'
+  URL = 'jdbc:postgresql://localhost:5432/tpch',
+  DRIVER = 'org.postgresql.Driver',
+  USERNAME = 'postgres',
+  PASSWORD = 'zxcv'
 );
 
-CREATE STREAM OrderStream FROM pg_catalog.Orderss;
+CREATE STREAM OrderStream FROM pg_catalog.Orders;
 
-CREATE STREAM LineitemStream FROM pg_catalog.Lineitemm (
+CREATE STREAM LineitemStream FROM pg_catalog.Lineitem(
   CDC_TIMESTAMP = 'last_update_date'
 );
 
