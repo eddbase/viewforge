@@ -12,7 +12,7 @@ import scala.jdk.CollectionConverters.IterableHasAsScala
 
 object Main {
   def main(args: Array[String]): Unit = {
-    val sql = Source.fromFile("pipeline.sql").getLines().mkString("\n")
+    val sql = Source.fromFile("icebergpipeline.sql").getLines().mkString("\n") // "icebergpipeline.sql" or "pipeline.sql"
 
     val parserConfig = SqlParser.config()
       .withLex(Lex.MYSQL)
@@ -47,7 +47,7 @@ object Main {
 
     println(code)
 
-    val writer = new PrintWriter("pipeline.py")
+    val writer = new PrintWriter("icebergpipeline.py") // "icebergpipeline.py" or "pipeline.py"
     writer.println(code)
     writer.close()
 

@@ -140,14 +140,30 @@ class MetadataGenerator extends CodeGenerator {
 
 
   private def generateSourceMetadataFromStream(stream: Stream): String = {
-    val tableName = stream.source.name.table.last
+////    val tableName = stream.source.name.table.last
+////    s""""${stream.name}": {"catalog": "${stream.source.catalog.name}", "table": "$tableName"}"""
+//    val tableName = stream.source.name.table.mkString(".")
+//    s""""${stream.name}": {"catalog": "${stream.source.catalog.name}", "table": "$tableName"}"""
+    val tableName = stream.source.catalog match {
+       case _: IcebergCatalog => stream.source.name.table.mkString(".") // Full name for Iceberg
+       case _ => stream.source.name.table.last // Simple name for others (like JDBC)
+    }
     s""""${stream.name}": {"catalog": "${stream.source.catalog.name}", "table": "$tableName"}"""
+
   }
 
   private def generateSourceMetadataFromTable(table: Table): String = {
     val sourceName = table.name.table.last
-    val tableNameInCatalog = table.name.table.last
+////    val tableNameInCatalog = table.name.table.last
+////    s""""$sourceName": {"catalog": "${table.catalog.name}", "table": "$tableNameInCatalog"}"""
+//    val tableNameInCatalog = table.name.table.mkString(".")
+//    s""""$sourceName": {"catalog": "${table.catalog.name}", "table": "$tableNameInCatalog"}"""
+    val tableNameInCatalog = table.catalog match {
+      case _: IcebergCatalog => table.name.table.mkString(".") // Full name for Iceberg
+      case _ => table.name.table.last // Simple name for others (like JDBC)
+    }
     s""""$sourceName": {"catalog": "${table.catalog.name}", "table": "$tableNameInCatalog"}"""
+
   }
 
 

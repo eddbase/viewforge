@@ -16,7 +16,42 @@ SPARK_JARS_PATH = "/home/moham/spark-3.5.5-bin-hadoop3/jars/postgresql-42.7.5.ja
 # SECTION 1: METADATA LAYER
 # =============================================================================
 
-##METADATA_PLACEHOLDER##
+DSL_METADATA = {
+    "catalogs": {
+        "local_iceberg": {
+                "type": "iceberg",
+                
+                "config": {
+                    "warehouse": "/tmp/iceberg_warehouse"
+                }
+            },
+        "pg_catalog": {
+                "type": "database",
+                
+                "config": {
+                    "url": "jdbc:postgresql://localhost:5432/tpch",
+                    "driver": "org.postgresql.Driver",
+                    "user": "postgres",
+                    "password": "zxcv"
+                }
+            }
+    },
+    "sources": {
+        "IcebergSource": {"catalog": "local_iceberg", "table": "db.sample_iceberg_table"}
+    },
+    "views": {
+        "TestIcebergView": {
+            "target_lag": "5 minute",
+                "depends_on": [],
+                "dataset_uri": "view://testicebergview",
+                "query": """
+                        SELECT `category`, `value`
+                        FROM `IcebergSource`
+                    """,
+                "materialize": {"type": "sink", "catalog": "pg_catalog", "table": "TestIcebergView"}
+            }
+    }
+}
 
 # =============================================================================
 # SECTION 2: GENERIC EXECUTION ENGINE
@@ -309,3 +344,4 @@ def create_dag_for_pipeline(sink_view_name, sink_view_meta):
 for view_name, view_meta in DSL_METADATA["views"].items():
     if view_meta["materialize"]["type"] == "sink":
         globals()[f"dag_for_{view_name}"] = create_dag_for_pipeline(view_name, view_meta)
+
