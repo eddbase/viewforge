@@ -5,6 +5,30 @@ CREATE CATALOG my_nessie (
   WAREHOUSE = 's3a://warehouse'
 );
 
+       -- 1. Define a catalog that points to your local Iceberg warehouse.
+-- This uses the default "hadoop" sub_type.
+CREATE CATALOG local_iceberg (
+  TYPE = 'iceberg',
+  WAREHOUSE = '/tmp/iceberg_warehouse'
+);
+
+-- 2. Create a source that points to the table you just created.
+-- The table name must include the database/schema part.
+CREATE STREAM IcebergSource FROM local_iceberg.`db.sample_iceberg_table`;
+
+-- 3. Create a simple view to read from the Iceberg table.
+-- This view will be written to a final sink table in PostgreSQL.
+CREATE VIEW TestIcebergView (
+                             TARGET_LAG = '5 minute',
+                             SINK = 'pg_catalog'
+    )
+AS
+SELECT
+    category,
+    value
+FROM
+    IcebergSource;
+
 CREATE CATALOG pg_catalog (
   TYPE = 'database',
   URL = 'jdbc:postgresql://localhost:5432/tpch',
