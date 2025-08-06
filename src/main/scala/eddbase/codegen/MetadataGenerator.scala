@@ -55,19 +55,57 @@ class MetadataGenerator extends CodeGenerator {
          |""".stripMargin
     dslMetadata.stripMargin.trim
   }
-
+//
+//  private def generateCatalogMetadata(catalog: Catalog): String = {
+//    val name = catalog.name.toString
+//    val (catalogType, subType, config) = catalog match {
+//      case dc: DatabaseCatalog =>
+//        val orderedConfig = LinkedHashMap[String, String]()
+//        val params = dc.params
+//
+//        orderedConfig.put("url", dc.url)
+//        params.get("DRIVER").foreach(d => orderedConfig.put("driver", d))
+//
+//        params.get("USERNAME").foreach(u => orderedConfig.put("user", u))
+//
+//        params.get("PASSWORD").foreach(p => orderedConfig.put("password", p))
+//
+//        val knownKeys = Set("DRIVER", "USERNAME", "PASSWORD")
+//        val otherParams = params.filter { case (k, _) => !knownKeys.contains(k) }
+//        otherParams.foreach { case (k, v) => orderedConfig.put(k.toLowerCase(), v) }
+//
+//        ("database", None, orderedConfig)
+//
+//      case ic: IcebergCatalog =>
+//        val sub = ic.params.get("SUB_TYPE").map(_.toLowerCase)
+//        ("iceberg", sub, ic.params - "SUB_TYPE")
+//
+//      case fc: FileCatalog =>
+//        ("file", None, fc.params)
+//    }
+//
+//    val subTypeEntry = subType.map(s => s""""sub_type": "$s",""").getOrElse("")
+//    val configEntries = config.map { case (k, v) => s""""$k": "$v"""" }.mkString(",\n" + " " * 12)
+//
+//    s""""$name": {
+//       |        "type": "$catalogType",
+//       |        $subTypeEntry
+//       |        "config": {
+//       |            $configEntries
+//       |        }
+//       |    }""".stripMargin
+//  }
   private def generateCatalogMetadata(catalog: Catalog): String = {
     val name = catalog.name.toString
-    val (catalogType, subType, config) = catalog match {
+    val (catalogType, sub_type, config) = catalog match {
       case dc: DatabaseCatalog =>
+        // This logic correctly creates an ordered map with lowercase keys already
         val orderedConfig = LinkedHashMap[String, String]()
         val params = dc.params
 
         orderedConfig.put("url", dc.url)
         params.get("DRIVER").foreach(d => orderedConfig.put("driver", d))
-
         params.get("USERNAME").foreach(u => orderedConfig.put("user", u))
-
         params.get("PASSWORD").foreach(p => orderedConfig.put("password", p))
 
         val knownKeys = Set("DRIVER", "USERNAME", "PASSWORD")
@@ -78,14 +116,18 @@ class MetadataGenerator extends CodeGenerator {
 
       case ic: IcebergCatalog =>
         val sub = ic.params.get("SUB_TYPE").map(_.toLowerCase)
+        // For Iceberg, the keys in `params` are uppercase. We will lowercase them below.
         ("iceberg", sub, ic.params - "SUB_TYPE")
 
       case fc: FileCatalog =>
         ("file", None, fc.params)
     }
 
-    val subTypeEntry = subType.map(s => s""""sub_type": "$s",""").getOrElse("")
-    val configEntries = config.map { case (k, v) => s""""$k": "$v"""" }.mkString(",\n" + " " * 12)
+    val subTypeEntry = sub_type.map(s => s""""sub_type": "$s",""").getOrElse("")
+
+    // *** THIS IS THE CORRECTED LINE ***
+    // Ensure all keys in the final JSON config are lowercase.
+    val configEntries = config.map { case (k, v) => s""""${k.toLowerCase()}": "$v"""" }.mkString(",\n" + " " * 12)
 
     s""""$name": {
        |        "type": "$catalogType",
@@ -95,6 +137,7 @@ class MetadataGenerator extends CodeGenerator {
        |        }
        |    }""".stripMargin
   }
+
 
   private def generateSourceMetadataFromStream(stream: Stream): String = {
     val tableName = stream.source.name.table.last
