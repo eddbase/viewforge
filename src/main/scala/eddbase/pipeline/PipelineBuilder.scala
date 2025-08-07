@@ -1,4 +1,5 @@
 package eddbase.pipeline
+import scala.annotation.tailrec
 
 import Helpers.{SqlIdentifierImplicit, SqlNodeImplicit, SqlNodeListImplicit}
 import eddbase.parser.{SqlCreateCatalog, SqlCreateStream, SqlCreateView}
@@ -62,7 +63,9 @@ object PipelineBuilder {
         DatabaseCatalog(name, connUrl, connParams)
 
       case FileCatalogType =>
+        require(paramMap.contains("PATH"), "File catalog requires a PATH parameter")
         FileCatalog(name, paramMap)
+
 
       case IcebergCatalogType =>
         IcebergCatalog(name, paramMap)
@@ -91,24 +94,60 @@ object PipelineBuilder {
     (stream, newCtx)
   }
 
-  private def buildTable(name: QualifiedTableName, ctx: Context): (Table, Context) = {
-    // Resolve catalog
-    require(name.catalog.nonEmpty, s"Table catalog not specified for ${name}")
-    val catalogName = SimpleTableName(name.catalog.toList)
-    val catalog = ctx.get(catalogName) match {
-      case Some(c: Catalog) => c
-      case _ => sys.error(s"Catalog name ${catalogName} does not exist")
+//  private def buildTable(name: QualifiedTableName, ctx: Context): (Table, Context) = {
+//    // Resolve catalog
+//    require(name.catalog.nonEmpty, s"Table catalog not specified for ${name}")
+//    val catalogName = SimpleTableName(name.catalog.toList)
+//    val catalog = ctx.get(catalogName) match {
+//      case Some(c: Catalog) => c
+//      case _ => sys.error(s"Catalog name ${catalogName} does not exist")
+//    }
+//    // Resolve table
+//    ctx.get(name) match {
+//      case Some(t: Table) => (t, ctx)
+//      case Some(_) => sys.error(s"Table name ${name} already exists")
+//      case _ =>
+//        val t = Table(name, catalog)
+//        (t, ctx.put(name, t))
+//    }
+//  }
+private def buildTable(name: QualifiedTableName, ctx: Context): (Table, Context) = {
+  @tailrec
+  def findCatalog(partsToTest: List[String]): (Catalog, List[String]) = {
+    if (partsToTest.isEmpty) {
+      sys.error(s"Could not resolve a valid catalog for table identifier: ${name}")
     }
-    // Resolve table
-    ctx.get(name) match {
-      case Some(t: Table) => (t, ctx)
-      case Some(_) => sys.error(s"Table name ${name} already exists")
+    val potentialCatalogName = SimpleTableName(partsToTest)
+    ctx.get(potentialCatalogName) match {
+      case Some(c: Catalog) =>
+        // Success! We found the longest matching catalog.
+        // The table parts are the remaining parts of the full name.
+        (c, name.parts.drop(partsToTest.length))
       case _ =>
-        val t = Table(name, catalog)
-        (t, ctx.put(name, t))
+        // If not found, try again with a shorter name (e.g., from "a.b.c" to "a.b")
+        findCatalog(partsToTest.dropRight(1))
     }
   }
 
+  ctx.get(name) match {
+    case Some(t: Table) => (t, ctx)
+    case Some(_) => sys.error(s"A non-table node with name ${name} already exists")
+    case _ =>
+      // Start the search using all parts of the identifier.
+      val (catalogObject, tablePartsList) = findCatalog(name.parts)
+
+      // Create a new QualifiedTableName on the fly with the correct properties.
+      val correctedName = new QualifiedTableName {
+        def parts: List[String] = name.parts
+        def table: List[String] = tablePartsList
+        def catalog: Option[String] = catalogObject.name.parts.headOption
+        def isSimple: Boolean = false
+      }
+
+      val t = Table(correctedName, catalogObject)
+      (t, ctx.put(correctedName, t))
+  }
+}
   private def build(node: SqlCreateView, ctx: Context): (Node, Context) = {
     // View name
     val name = node.name.getSimpleTableName

@@ -18,12 +18,11 @@ SPARK_JARS_PATH = "/home/moham/spark-3.5.5-bin-hadoop3/jars/postgresql-42.7.5.ja
 
 DSL_METADATA = {
     "catalogs": {
-        "my_nessie": {
-                "type": "iceberg",
-                "sub_type": "nessie",
+        "file_warehouse": {
+                "type": "file",
+                
                 "config": {
-                    "uri": "nessie_url",
-                    "warehouse": "s3a://warehouse"
+                    "path": "/tmp/file_warehouse/"
                 }
             },
         "pg_catalog": {
@@ -38,36 +37,22 @@ DSL_METADATA = {
             }
     },
     "sources": {
-        "OrderStream": {"catalog": "pg_catalog", "table": "Orders", "params": {}},
-        "LineitemStream": {"catalog": "pg_catalog", "table": "Lineitem", "params": {"CDC_TIMESTAMP": "last_update_date"}},
-        "Customer": {"catalog": "pg_catalog", "table": "Customer"}
+        "OrdersStream": {"catalog": "file_warehouse", "table": "orders.csv", "params": {"FORMAT": "csv", "HEADER": "true", "INFERSCHEMA": "true"}},
+        "customerStream": {"catalog": "file_warehouse", "table": "customer.csv", "params": {"FORMAT": "csv", "HEADER": "true", "INFERSCHEMA": "true"}}
     },
     "views": {
-        "OrderCustomer": {
-            "target_lag": "1 minute",
+        "orderCustomer": {
+            "target_lag": "5 minute",
                 "depends_on": [],
                 "dataset_uri": "view://ordercustomer",
                 "query": """
                         SELECT `O`.`o_orderkey`, `O`.`o_orderdate`, `O`.`o_shippriority`, COUNT(*) AS `cnt`
-                        FROM `OrderStream` AS `O`
-                        INNER JOIN `Customer` AS `C` ON `O`.`o_custkey` = `C`.`c_custkey`
+                        FROM `OrdersStream` AS `O`
+                        INNER JOIN `customerStream` AS `C` ON `O`.`o_custkey` = `C`.`c_custkey`
                         WHERE `C`.`c_mktsegment` = 'BUILDING' AND `O`.`o_orderdate` < `DATE`('1995-03-15')
                         GROUP BY `O`.`o_orderkey`, `O`.`o_orderdate`, `O`.`o_shippriority`
                     """,
-                "materialize": {"type": "xcom"}
-            },
-        "TPCH3": {
-            "target_lag": "2 minute",
-                "depends_on": ["OrderCustomer"],
-                "dataset_uri": "view://tpch3",
-                "query": """
-                        SELECT `OC`.`o_orderkey`, `OC`.`o_orderdate`, `OC`.`o_shippriority`, SUM(`cnt` * `L`.`l_extendedprice` * (1 - `L`.`l_discount`)) AS `revenue`
-                        FROM `LineitemStream` AS `L`
-                        INNER JOIN `OrderCustomer` AS `OC` ON `L`.`l_orderkey` = `OC`.`o_orderkey`
-                        WHERE `L`.`l_shipdate` > `DATE`('1995-03-15')
-                        GROUP BY `OC`.`o_orderkey`, `OC`.`o_orderdate`, `OC`.`o_shippriority`
-                    """,
-                "materialize": {"type": "sink", "catalog": "pg_catalog", "table": "TPCH3"}
+                "materialize": {"type": "sink", "catalog": "pg_catalog", "table": "orderCustomer"}
             }
     }
 }

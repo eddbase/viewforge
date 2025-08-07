@@ -22,13 +22,47 @@ SPARK_JARS_PATH = "/home/moham/spark-3.5.5-bin-hadoop3/jars/postgresql-42.7.5.ja
 # SECTION 2: GENERIC EXECUTION ENGINE
 # =============================================================================
 
-def _get_spark_session(jar_path=SPARK_JARS_PATH):
+def _get_spark_session(catalogs_meta: dict, jar_path=SPARK_JARS_PATH):
     """Initializes and returns a Spark session with required configurations."""
     from pyspark.sql import SparkSession
-    return SparkSession.builder \
+    builder = SparkSession.builder \
       .appName("GeneratedSparkPipeline") \
       .config("spark.jars", jar_path) \
-      .getOrCreate()
+      .config("spark.sql.extensions", "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
+
+    for catalog_name, meta in catalogs_meta.items():
+        if meta["type"] == "iceberg":
+           print(f"Configuring Spark for Iceberg catalog: '{catalog_name}'")
+           # Set the implementation for this specific catalog
+           builder.config(f"spark.sql.catalog.{catalog_name}", "org.apache.iceberg.spark.SparkCatalog")
+
+           # Add specific configurations for a Nessie-backed catalog
+           if meta.get("sub_type") == "nessie":
+               builder.config(f"spark.sql.catalog.{catalog_name}.catalog-impl", "org.apache.iceberg.nessie.NessieCatalog")
+               builder.config(f"spark.sql.catalog.{catalog_name}.uri", meta["config"]["uri"])
+               builder.config(f"spark.sql.catalog.{catalog_name}.warehouse", meta["config"]["warehouse"])
+
+                    # You could add other `elif` blocks here for other Iceberg backends like Hive or Hadoop
+           elif meta.get("sub_type") == "rest":
+               print(f"-> Using REST backend for catalog '{catalog_name}'")
+               builder.config(f"spark.sql.catalog.{catalog_name}.catalog-impl", "org.apache.iceberg.rest.RESTCatalog")
+               builder.config(f"spark.sql.catalog.{catalog_name}.uri", meta["config"]["uri"])
+               builder.config(f"spark.sql.catalog.{catalog_name}.warehouse", meta["config"]["warehouse"])
+
+           elif meta.get("sub_type") == "hive":
+               print(f"-> Using Hive backend for catalog '{catalog_name}'")
+               builder.config(f"spark.sql.catalog.{catalog_name}.catalog-impl", "org.apache.iceberg.hive.HiveCatalog")
+               # For Hive, the URI points to the Hive Metastore
+               builder.config(f"spark.sql.catalog.{catalog_name}.uri", meta["config"]["uri"])
+               builder.config(f"spark.sql.catalog.{catalog_name}.warehouse", meta["config"]["warehouse"])
+
+           else:
+               # If no sub_type is specified, default to a simple Hadoop catalog on a filesystem
+               print(f"-> No sub_type specified. Using default Hadoop backend for catalog '{catalog_name}'")
+               builder.config(f"spark.sql.catalog.{catalog_name}.catalog-impl", "org.apache.iceberg.hadoop.HadoopCatalog")
+               builder.config(f"spark.sql.catalog.{catalog_name}.warehouse", meta["config"]["warehouse"])
+
+    return builder.getOrCreate()
 
 def _parse_target_lag(lag_string: str) -> dict:
     """Parses a human-readable lag string into seconds and a timedelta object."""
@@ -99,7 +133,7 @@ def execute_view_logic_stateful(view_name: str, dag_id: str, base_refresh_rate_s
 
     # --- 2. Execute Spark Logic ---
     try:
-        spark = _get_spark_session()
+        spark = _get_spark_session(DSL_METADATA["catalogs"])
         view_meta = DSL_METADATA["views"][view_name]
         query_string = view_meta["query"]
 
@@ -124,7 +158,47 @@ def execute_view_logic_stateful(view_name: str, dag_id: str, base_refresh_rate_s
                     conn_props = catalog_meta["config"]
                     df = spark.read.jdbc(url=conn_props["url"], table=source_meta["table"], properties={k: v for k, v in conn_props.items() if k not in ['url', 'type', 'driver']})
                     df.createOrReplaceTempView(source_name)
+                elif catalog_meta["type"] == "iceberg":
+                    print(f"Loading Iceberg source: '{source_name}'")
+                    iceberg_catalog_name = source_meta["catalog"]
+                    iceberg_table_name = source_meta["table"]
 
+                    # Construct the full, three-part name that Spark SQL requires for Iceberg
+                    full_iceberg_path = f"{iceberg_catalog_name}.{iceberg_table_name}"
+
+                    # Read the Iceberg table using spark.table()
+                    df = spark.table(full_iceberg_path)
+                    df.createOrReplaceTempView(source_name)
+                elif catalog_meta["type"] == "file":
+                    import os
+                    print(f"Loading file source: '{source_name}'")
+                    catalog_config = catalog_meta.get("config", {})
+                    base_path = catalog_config.get("path")
+                    if not base_path:
+                        raise ValueError(f"File catalog '{source_meta['catalog']}' is missing a 'path'.")
+
+                    # Get filename and parameters from the STREAM's metadata
+                    filename = source_meta.get("table")
+                    stream_params = source_meta.get("params", {})
+                    file_format = stream_params.get("format")
+
+                    if not filename or not file_format:
+                        raise ValueError(f"Source '{source_name}' must specify a filename in the FROM clause and a 'format' parameter.")
+
+                    # Construct the full, absolute path to the file
+                    full_path = os.path.join(base_path, filename)
+
+                    print(f"Reading {file_format} file from: {full_path}")
+                    reader = spark.read.format(file_format)
+
+                    # Apply any extra parameters from the stream definition (e.g., header, inferSchema)
+                    extra_params = {k: v for k, v in stream_params.items() if k != "format"}
+                    if extra_params:
+                        print(f"Applying reader options: {extra_params}")
+                        reader.options(**extra_params)
+
+                    df = reader.load(full_path)
+                    df.createOrReplaceTempView(source_name)
         # Execute Query
         print(f"Running query for '{view_name}':\n{query_string}")
         result_df = spark.sql(query_string)
