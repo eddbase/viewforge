@@ -179,7 +179,8 @@ def execute_view_logic_stateful(view_name: str, dag_id: str, base_refresh_rate_s
 
                     # Get filename and parameters from the STREAM's metadata
                     filename = source_meta.get("table")
-                    stream_params = source_meta.get("params", {})
+                    stream_params_raw = source_meta.get("params", {})
+                    stream_params = {k.lower(): v for k, v in stream_params_raw.items()}
                     file_format = stream_params.get("format")
 
                     if not filename or not file_format:
@@ -192,7 +193,7 @@ def execute_view_logic_stateful(view_name: str, dag_id: str, base_refresh_rate_s
                     reader = spark.read.format(file_format)
 
                     # Apply any extra parameters from the stream definition (e.g., header, inferSchema)
-                    extra_params = {k: v for k, v in stream_params.items() if k != "format"}
+                    extra_params = {k: v for k, v in stream_params.items() if k.lower() != "format"}
                     if extra_params:
                         print(f"Applying reader options: {extra_params}")
                         reader.options(**extra_params)
