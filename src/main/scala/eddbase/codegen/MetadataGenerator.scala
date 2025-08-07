@@ -148,7 +148,11 @@ class MetadataGenerator extends CodeGenerator {
        case _: IcebergCatalog => stream.source.name.table.mkString(".") // Full name for Iceberg
        case _ => stream.source.name.table.last // Simple name for others (like JDBC)
     }
-    s""""${stream.name}": {"catalog": "${stream.source.catalog.name}", "table": "$tableName"}"""
+    val paramsString = stream.params
+      .map { case (k, v) => s""""$k": "$v"""" }
+      .mkString(", ")
+
+    s""""${stream.name}": {"catalog": "${stream.source.catalog.name}", "table": "$tableName", "params": {$paramsString}}"""
 
   }
 

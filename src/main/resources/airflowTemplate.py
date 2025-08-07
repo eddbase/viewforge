@@ -169,6 +169,36 @@ def execute_view_logic_stateful(view_name: str, dag_id: str, base_refresh_rate_s
                     # Read the Iceberg table using spark.table()
                     df = spark.table(full_iceberg_path)
                     df.createOrReplaceTempView(source_name)
+                elif catalog_meta["type"] == "file":
+                    import os
+                    print(f"Loading file source: '{source_name}'")
+                    catalog_config = catalog_meta.get("config", {})
+                    base_path = catalog_config.get("path")
+                    if not base_path:
+                        raise ValueError(f"File catalog '{source_meta['catalog']}' is missing a 'path'.")
+
+                    # Get filename and parameters from the STREAM's metadata
+                    filename = source_meta.get("table")
+                    stream_params = source_meta.get("params", {})
+                    file_format = stream_params.get("format")
+
+                    if not filename or not file_format:
+                        raise ValueError(f"Source '{source_name}' must specify a filename in the FROM clause and a 'format' parameter.")
+
+                    # Construct the full, absolute path to the file
+                    full_path = os.path.join(base_path, filename)
+
+                    print(f"Reading {file_format} file from: {full_path}")
+                    reader = spark.read.format(file_format)
+
+                    # Apply any extra parameters from the stream definition (e.g., header, inferSchema)
+                    extra_params = {k: v for k, v in stream_params.items() if k != "format"}
+                    if extra_params:
+                        print(f"Applying reader options: {extra_params}")
+                        reader.options(**extra_params)
+
+                    df = reader.load(full_path)
+                    df.createOrReplaceTempView(source_name)
         # Execute Query
         print(f"Running query for '{view_name}':\n{query_string}")
         result_df = spark.sql(query_string)

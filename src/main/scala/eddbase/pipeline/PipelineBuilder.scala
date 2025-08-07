@@ -63,7 +63,9 @@ object PipelineBuilder {
         DatabaseCatalog(name, connUrl, connParams)
 
       case FileCatalogType =>
+        require(paramMap.contains("PATH"), "File catalog requires a PATH parameter")
         FileCatalog(name, paramMap)
+
 
       case IcebergCatalogType =>
         IcebergCatalog(name, paramMap)
