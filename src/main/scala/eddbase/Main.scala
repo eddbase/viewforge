@@ -12,7 +12,7 @@ import scala.jdk.CollectionConverters.IterableHasAsScala
 
 object Main {
   def main(args: Array[String]): Unit = {
-    val baseFileName = "icebergpipeline" // "pipeline", or "icebergpipeline", or  "filepipeline"
+    val baseFileName = "filepipeline" // "pipeline", or "icebergpipeline", or  "filepipeline"
     val sql = Source.fromFile(s"$baseFileName.sql").getLines().mkString("\n")
 
     val parserConfig = SqlParser.config()
