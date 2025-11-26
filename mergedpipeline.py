@@ -18,6 +18,13 @@ SPARK_JARS_PATH = "/home/moham/spark-3.5.5-bin-hadoop3/jars/postgresql-42.7.5.ja
 
 DSL_METADATA = {
     "catalogs": {
+        "file_warehouse": {
+                "type": "file",
+                
+                "config": {
+                    "path": "/tmp/file_warehouse/"
+                }
+            },
         "local_iceberg": {
                 "type": "iceberg",
                 
@@ -37,18 +44,32 @@ DSL_METADATA = {
             }
     },
     "sources": {
-        "IcebergSource": {"catalog": "local_iceberg", "table": "db.sample_iceberg_table", "params": {}}
+        "IcebergSource": {"catalog": "local_iceberg", "table": "db.sample_iceberg_table", "params": {}},
+        "customerStream": {"catalog": "file_warehouse", "table": "customer.csv", "params": {"FORMAT": "csv", "HEADER": "true", "INFERSCHEMA": "true"}},
+        "orders": {"catalog": "pg_catalog", "table": "orders"}
     },
     "views": {
-        "TestIcebergView": {
-            "target_lag": "5 minute",
+        "orderCustomerView": {
+            "target_lag": "3 minute",
                 "depends_on": [],
-                "dataset_uri": "view://testicebergview",
+                "dataset_uri": "view://ordercustomerview",
                 "query": """
-                        SELECT `category`, `value`
-                        FROM `IcebergSource`
+                        SELECT `O`.`o_orderkey`, `O`.`o_orderdate`, `O`.`o_shippriority`
+                        FROM `orders` AS `O`
+                        INNER JOIN `customerStream` AS `C` ON `O`.`o_custkey` = `C`.`c_custkey`
                     """,
-                "materialize": {"type": "sink", "catalog": "pg_catalog", "table": "TestIcebergView"}
+                "materialize": {"type": "xcom"}
+            },
+        "joinResultView": {
+            "target_lag": "5 minute",
+                "depends_on": ["orderCustomerView"],
+                "dataset_uri": "view://joinresultview",
+                "query": """
+                        SELECT `O`.`o_orderkey`
+                        FROM `orderCustomerView` AS `O`
+                        INNER JOIN `IcebergSource` AS `I`
+                    """,
+                "materialize": {"type": "sink", "catalog": "pg_catalog", "table": "joinResultView"}
             }
     }
 }
