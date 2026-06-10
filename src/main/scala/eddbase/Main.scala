@@ -1,6 +1,7 @@
 package eddbase
 
-import eddbase.codegen.PySparkCodeGenerator
+import eddbase.codegen.AirflowCodeGenerator
+//import eddbase.codegen.PySparkCodeGenerator
 import eddbase.pipeline.PipelineBuilder
 import org.apache.calcite.config.Lex
 import org.apache.calcite.sql.parser.SqlParser
@@ -11,7 +12,8 @@ import scala.jdk.CollectionConverters.IterableHasAsScala
 
 object Main {
   def main(args: Array[String]): Unit = {
-    val sql = Source.fromFile("pipeline.sql").getLines().mkString("\n")
+    val baseFileName = "pipeline" // "pipeline", or "icebergpipeline", or  "filepipeline", or "mergedpipeline"
+    val sql = Source.fromFile(s"$baseFileName.sql").getLines().mkString("\n")
 
     val parserConfig = SqlParser.config()
       .withLex(Lex.MYSQL)
@@ -30,11 +32,23 @@ object Main {
     val (nodes, _) = PipelineBuilder.build(nodeList.getList.asScala.toList)
     nodes.foreach(n => println(n))
 
-    val cg = new PySparkCodeGenerator
-    val code = cg.codegen(nodes, "SparkExample")
+//    // this part is for testing MetadataGenerator
+//    val metadataGenerator = new MetadataGenerator()
+//    val metadataString = metadataGenerator.codegen(nodes, "my_app")
+//    println(metadataString)
+
+//    // this part is for testing PySparkCodeGenerator
+//    val cg = new PySparkCodeGenerator
+//    val code = cg.codegen(nodes, "SparkExample")
+//    println(code)
+//
+
+    val airflowGenerator = new AirflowCodeGenerator()
+    val code = airflowGenerator.codegen(nodes, "my_app")
+
     println(code)
 
-    val writer = new PrintWriter("pipeline.py")
+    val writer = new PrintWriter(s"$baseFileName.py")
     writer.println(code)
     writer.close()
 
@@ -106,8 +120,11 @@ object Main {
     val (nodes, _) = PipelineBuilder.build(nodeList.getList.asScala.toList)
     nodes.foreach(n => println(n))
 
-    val cg = new PySparkCodeGenerator
-    val code = cg.codegen(nodes, "SparkExample")
+//    val cg = new PySparkCodeGenerator
+//    val code = cg.codegen(nodes, "SparkExample")
+//    println(code)
+    val cg = new AirflowCodeGenerator
+    val code = cg.codegen(nodes, "AirflowExample")
     println(code)
 
   }

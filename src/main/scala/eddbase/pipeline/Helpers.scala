@@ -3,6 +3,7 @@ package eddbase.pipeline
 import org.apache.calcite.sql._
 import org.apache.calcite.sql.util.SqlShuttle
 
+import scala.collection.mutable.LinkedHashMap
 import scala.jdk.CollectionConverters.CollectionHasAsScala
 
 object Helpers {
@@ -73,15 +74,34 @@ object Helpers {
     def toKeyValueMap(f: SqlNode => String): Map[String, String] = toKeyValueMap(f, f)
 
     def toKeyValueMap(keyFn: SqlNode => String, valueFn: SqlNode => String): Map[String, String] = {
-      def toMap(l: List[SqlNode]): Map[String, String] = l match {
-        case key :: value :: rest => toMap(rest) + (keyFn(key) -> valueFn(value))
-        case _ => Map.empty[String, String]
+      val builder = LinkedHashMap.newBuilder[String, String]
+      val params = nodeList.getList.asScala.toList
+      // Iterate through the list of nodes in pairs (key, value)
+      for (i <- 0 until params.length by 2) {
+        builder += (keyFn(params(i)) -> valueFn(params(i + 1)))
       }
-
-      toMap(nodeList.getList.asScala.toList)
+      builder.result().toMap  // Returns an immutable Map that preserves insertion order
     }
+//    def toKeyValueMap(keyFn: SqlNode => String, valueFn: SqlNode => String): Map[String, String] = {
+//      def toMap(l: List[SqlNode]): Map[String, String] = l match {
+//        case key :: value :: rest => toMap(rest) + (keyFn(key) -> valueFn(value))
+//        case _ => Map.empty[String, String]
+//      }
+//
+//      toMap(nodeList.getList.asScala.toList)
+//    }
+//
+//    def toParameterMap: Map[String, String] =
+//      nodeList.toKeyValueMap(_.toString.toUpperCase, toUnquotedString)
 
-    def toParameterMap: Map[String, String] =
-      nodeList.toKeyValueMap(_.toString.toUpperCase, toUnquotedString)
+
+    def toParameterMap: Map[String, String] = {
+      // This function correctly extracts the key's name, even if it's quoted
+      def keyNodeToString(node: SqlNode): String = node match {
+        case id: SqlIdentifier => id.getSimple.toUpperCase
+        case _ => node.toString.toUpperCase
+      }
+      nodeList.toKeyValueMap(keyNodeToString, toUnquotedString)
+    }
   }
 }

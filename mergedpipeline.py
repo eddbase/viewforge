@@ -1,0 +1,399 @@
+import re
+import math
+from functools import reduce
+import pendulum
+from datetime import timedelta, date, datetime
+
+from airflow.sdk import DAG, task, Variable
+from airflow.exceptions import AirflowSkipException
+from airflow.providers.standard.operators.python import PythonOperator
+from airflow.utils.trigger_rule import TriggerRule
+
+
+SPARK_JARS_PATH = "/home/moham/spark-3.5.5-bin-hadoop3/jars/postgresql-42.7.5.jar"
+
+# =============================================================================
+# SECTION 1: METADATA LAYER
+# =============================================================================
+
+DSL_METADATA = {
+    "catalogs": {
+        "file_warehouse": {
+                "type": "file",
+                
+                "config": {
+                    "path": "/tmp/file_warehouse/"
+                }
+            },
+        "local_iceberg": {
+                "type": "iceberg",
+                
+                "config": {
+                    "warehouse": "/tmp/iceberg_warehouse"
+                }
+            },
+        "pg_catalog": {
+                "type": "database",
+                
+                "config": {
+                    "url": "jdbc:postgresql://localhost:5432/tpch",
+                    "driver": "org.postgresql.Driver",
+                    "user": "postgres",
+                    "password": "zxcv"
+                }
+            }
+    },
+    "sources": {
+        "IcebergSource": {"catalog": "local_iceberg", "table": "db.sample_iceberg_table", "params": {}},
+        "customerStream": {"catalog": "file_warehouse", "table": "customer.csv", "params": {"FORMAT": "csv", "HEADER": "true", "INFERSCHEMA": "true"}},
+        "orders": {"catalog": "pg_catalog", "table": "orders"}
+    },
+    "views": {
+        "orderCustomerView": {
+            "target_lag": "3 minute",
+                "depends_on": [],
+                "dataset_uri": "view://ordercustomerview",
+                "query": """
+                        SELECT `O`.`o_orderkey`, `O`.`o_orderdate`, `O`.`o_shippriority`
+                        FROM `orders` AS `O`
+                        INNER JOIN `customerStream` AS `C` ON `O`.`o_custkey` = `C`.`c_custkey`
+                    """,
+                "materialize": {"type": "xcom"}
+            },
+        "joinResultView": {
+            "target_lag": "5 minute",
+                "depends_on": ["orderCustomerView"],
+                "dataset_uri": "view://joinresultview",
+                "query": """
+                        SELECT `O`.`o_orderkey`
+                        FROM `orderCustomerView` AS `O`
+                        INNER JOIN `IcebergSource` AS `I`
+                    """,
+                "materialize": {"type": "sink", "catalog": "pg_catalog", "table": "joinResultView"}
+            }
+    }
+}
+
+# =============================================================================
+# SECTION 2: GENERIC EXECUTION ENGINE
+# =============================================================================
+
+def _get_spark_session(catalogs_meta: dict, jar_path=SPARK_JARS_PATH):
+    """Initializes and returns a Spark session with required configurations."""
+    from pyspark.sql import SparkSession
+    builder = SparkSession.builder \
+      .appName("GeneratedSparkPipeline") \
+      .config("spark.jars", jar_path) \
+      .config("spark.sql.extensions", "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
+
+    for catalog_name, meta in catalogs_meta.items():
+        if meta["type"] == "iceberg":
+           print(f"Configuring Spark for Iceberg catalog: '{catalog_name}'")
+           # Set the implementation for this specific catalog
+           builder.config(f"spark.sql.catalog.{catalog_name}", "org.apache.iceberg.spark.SparkCatalog")
+
+           # Add specific configurations for a Nessie-backed catalog
+           if meta.get("sub_type") == "nessie":
+               builder.config(f"spark.sql.catalog.{catalog_name}.catalog-impl", "org.apache.iceberg.nessie.NessieCatalog")
+               builder.config(f"spark.sql.catalog.{catalog_name}.uri", meta["config"]["uri"])
+               builder.config(f"spark.sql.catalog.{catalog_name}.warehouse", meta["config"]["warehouse"])
+
+                    # You could add other `elif` blocks here for other Iceberg backends like Hive or Hadoop
+           elif meta.get("sub_type") == "rest":
+               print(f"-> Using REST backend for catalog '{catalog_name}'")
+               builder.config(f"spark.sql.catalog.{catalog_name}.catalog-impl", "org.apache.iceberg.rest.RESTCatalog")
+               builder.config(f"spark.sql.catalog.{catalog_name}.uri", meta["config"]["uri"])
+               builder.config(f"spark.sql.catalog.{catalog_name}.warehouse", meta["config"]["warehouse"])
+
+           elif meta.get("sub_type") == "hive":
+               print(f"-> Using Hive backend for catalog '{catalog_name}'")
+               builder.config(f"spark.sql.catalog.{catalog_name}.catalog-impl", "org.apache.iceberg.hive.HiveCatalog")
+               # For Hive, the URI points to the Hive Metastore
+               builder.config(f"spark.sql.catalog.{catalog_name}.uri", meta["config"]["uri"])
+               builder.config(f"spark.sql.catalog.{catalog_name}.warehouse", meta["config"]["warehouse"])
+
+           else:
+               # If no sub_type is specified, default to a simple Hadoop catalog on a filesystem
+               print(f"-> No sub_type specified. Using default Hadoop backend for catalog '{catalog_name}'")
+               builder.config(f"spark.sql.catalog.{catalog_name}.catalog-impl", "org.apache.iceberg.hadoop.HadoopCatalog")
+               builder.config(f"spark.sql.catalog.{catalog_name}.warehouse", meta["config"]["warehouse"])
+
+    return builder.getOrCreate()
+
+def _parse_target_lag(lag_string: str) -> dict:
+    """Parses a human-readable lag string into seconds and a timedelta object."""
+    match = re.match(r"(\d+)\s+(minute|hour|day)s?", lag_string, re.IGNORECASE)
+    if not match:
+        raise ValueError(f"Invalid TARGET_LAG format: '{lag_string}'")
+    value = int(match.group(1))
+    unit = match.group(2).lower()
+    td = timedelta(**{unit + 's': value})
+    return {'timedelta': td, 'seconds': int(td.total_seconds())}
+
+def _calculate_gcd_for_list(numbers: list[int]) -> int:
+    """Helper function to calculate the Greatest Common Divisor (GCD) for a list of numbers."""
+    if not numbers:
+        return 0
+    return reduce(math.gcd, numbers)
+
+def _convert_spark_rows_to_json_serializable(rows_as_dicts: list) -> list:
+    """
+    Converts a list of dictionaries (from Spark rows) to a JSON-serializable list.
+    It specifically handles converting date/datetime objects to ISO 8601 strings.
+    """
+    serializable_list = []
+    for row_dict in rows_as_dicts:
+        serializable_row = {}
+        for key, value in row_dict.items():
+            if isinstance(value, (date, datetime)):
+                serializable_row[key] = value.isoformat()
+            else:
+                serializable_row[key] = value
+        serializable_list.append(serializable_row)
+    return serializable_list
+
+@task
+def execute_view_logic_stateful(view_name: str, dag_id: str, base_refresh_rate_seconds: int, **kwargs):
+    """
+    A stateful function that uses Airflow Variables to manage state and decides whether to run or skip.
+    The read-check-increment-write logic is now atomic to prevent race conditions.
+    """
+    runtime_variable_key = f"runtime_info_{dag_id}"
+    print(f"Executing logic for view: {view_name}")
+
+    try:
+        runtime_info = Variable.get(runtime_variable_key, deserialize_json=True)
+    except Exception as e:
+        raise AirflowSkipException(f"Could not retrieve runtime info '{runtime_variable_key}'. Skipping. Error: {e}")
+
+    # --- 1. Atomically check schedule, and update counter ---
+    view_info = runtime_info[view_name]
+    counter = view_info.get("counter", 0)
+    view_refresh_rate = max(1, view_info["target_lag_seconds"] // base_refresh_rate_seconds)
+
+    print(f"View '{view_name}': Current Counter={counter}, RefreshRate={view_refresh_rate}")
+
+    # Decide if we should run based on the counter
+    should_run = (counter % view_refresh_rate == 0)
+
+    runtime_info[view_name]["counter"] += 1
+    Variable.set(runtime_variable_key, runtime_info, serialize_json=True)
+    print(f"Atomically incremented counter to {runtime_info[view_name]['counter']} and saved state.")
+
+    if not should_run:
+        skip_message = f"Skipping '{view_name}'. Condition not met for counter {counter}."
+        print(skip_message)
+        raise AirflowSkipException(skip_message)
+
+    print(f"Executing '{view_name}'. Condition met for counter {counter}.")
+
+    # --- 2. Execute Spark Logic ---
+    try:
+        spark = _get_spark_session(DSL_METADATA["catalogs"])
+        view_meta = DSL_METADATA["views"][view_name]
+        query_string = view_meta["query"]
+
+        # Load Dependencies
+        for dep_view_name in view_meta.get("depends_on", []):
+            data_variable_key = f"data_payload_{dag_id}_{dep_view_name}"
+            print(f"Loading dependency '{dep_view_name}' from Variable: '{data_variable_key}'")
+            try:
+                data = Variable.get(data_variable_key, deserialize_json=True)
+                if data:
+                    spark.createDataFrame(data).createOrReplaceTempView(dep_view_name)
+                else:
+                    raise AirflowSkipException(f"Dependency '{dep_view_name}' has no data payload yet. Skipping.")
+            except Exception as e:
+                raise AirflowSkipException(f"Failed to load dependency '{dep_view_name}' from Variable. Error: {e}")
+
+        # Load source tables
+        for source_name, source_meta in DSL_METADATA["sources"].items():
+            if re.search(r'\b' + re.escape(source_name) + r'\b', query_string):
+                catalog_meta = DSL_METADATA["catalogs"][source_meta["catalog"]]
+                if catalog_meta["type"] == "database":
+                    conn_props = catalog_meta["config"]
+                    df = spark.read.jdbc(url=conn_props["url"], table=source_meta["table"], properties={k: v for k, v in conn_props.items() if k not in ['url', 'type', 'driver']})
+                    df.createOrReplaceTempView(source_name)
+                elif catalog_meta["type"] == "iceberg":
+                    print(f"Loading Iceberg source: '{source_name}'")
+                    iceberg_catalog_name = source_meta["catalog"]
+                    iceberg_table_name = source_meta["table"]
+
+                    # Construct the full, three-part name that Spark SQL requires for Iceberg
+                    full_iceberg_path = f"{iceberg_catalog_name}.{iceberg_table_name}"
+
+                    # Read the Iceberg table using spark.table()
+                    df = spark.table(full_iceberg_path)
+                    df.createOrReplaceTempView(source_name)
+                elif catalog_meta["type"] == "file":
+                    import os
+                    print(f"Loading file source: '{source_name}'")
+                    catalog_config = catalog_meta.get("config", {})
+                    base_path = catalog_config.get("path")
+                    if not base_path:
+                        raise ValueError(f"File catalog '{source_meta['catalog']}' is missing a 'path'.")
+
+                    # Get filename and parameters from the STREAM's metadata
+                    filename = source_meta.get("table")
+                    stream_params_raw = source_meta.get("params", {})
+                    stream_params = {k.lower(): v for k, v in stream_params_raw.items()}
+                    file_format = stream_params.get("format")
+
+                    if not filename or not file_format:
+                        raise ValueError(f"Source '{source_name}' must specify a filename in the FROM clause and a 'format' parameter.")
+
+                    # Construct the full, absolute path to the file
+                    full_path = os.path.join(base_path, filename)
+
+                    print(f"Reading {file_format} file from: {full_path}")
+                    reader = spark.read.format(file_format)
+
+                    # Apply any extra parameters from the stream definition (e.g., header, inferSchema)
+                    extra_params = {k: v for k, v in stream_params.items() if k.lower() != "format"}
+                    if extra_params:
+                        print(f"Applying reader options: {extra_params}")
+                        reader.options(**extra_params)
+
+                    df = reader.load(full_path)
+                    df.createOrReplaceTempView(source_name)
+        # Execute Query
+        print(f"Running query for '{view_name}':\n{query_string}")
+        result_df = spark.sql(query_string)
+
+        # Materialize Result
+        materialize_config = view_meta["materialize"]
+        if materialize_config["type"] == "sink":
+            catalog_name = materialize_config["catalog"]
+            table_name = materialize_config["table"]
+            catalog_meta = DSL_METADATA["catalogs"][catalog_name]
+            conn_props = catalog_meta["config"]
+            print(f"Writing results to sink: {catalog_name}.{table_name}")
+            result_df.write.jdbc(url=conn_props["url"], table=table_name, mode="overwrite", properties={k: v for k, v in conn_props.items() if k not in ['url', 'type', 'driver']})
+        elif materialize_config["type"] == "xcom":
+            data_variable_key = f"data_payload_{dag_id}_{view_name}"
+            print(f"Persisting results to Variable: '{data_variable_key}'")
+            collected_rows_as_dicts = [row.asDict() for row in result_df.collect()]
+            serializable_data = _convert_spark_rows_to_json_serializable(collected_rows_as_dicts)
+            Variable.set(data_variable_key, serializable_data, serialize_json=True)
+
+        # --- 3. Update last_update_time on Success ---
+        print(f"Successfully executed '{view_name}'. Updating timestamp.")
+        current_runtime_info = Variable.get(runtime_variable_key, deserialize_json=True)
+        current_runtime_info[view_name]["last_update_time"] = pendulum.now().isoformat()
+        Variable.set(runtime_variable_key, current_runtime_info, serialize_json=True)
+        print("Timestamp updated successfully.")
+
+    finally:
+        # The finally block is now only for cleanup, like stopping Spark.
+        if 'spark' in locals() and spark.getActiveSession():
+            spark.stop()
+            print("Spark session stopped.")
+
+    return
+
+# =============================================================================
+# SECTION 3: DYNAMIC AIRFLOW DAG GENERATION
+# =============================================================================
+
+def setup_runtime_information(dag_id: str, views_in_pipeline: set):
+    """
+    Initializes all required Airflow Variables for both runtime state and data payloads.
+    """
+    runtime_variable_key = f"runtime_info_{dag_id}"
+    print(f"Checking for runtime info variable: '{runtime_variable_key}'")
+
+    try:
+        current_info = Variable.get(runtime_variable_key, deserialize_json=True)
+    except Exception:
+        current_info = None
+
+    if current_info is None:
+        print("Runtime info not found. Initializing new state.")
+        initial_info = {}
+        for view_name in views_in_pipeline:
+            view_meta = DSL_METADATA["views"][view_name]
+            lag_info = _parse_target_lag(view_meta["target_lag"])
+            initial_info[view_name] = {"target_lag_seconds": lag_info['seconds'], "last_update_time": None, "counter": 0}
+            if view_meta["materialize"]["type"] == "xcom":
+                data_variable_key = f"data_payload_{dag_id}_{view_name}"
+                try:
+                    Variable.get(data_variable_key)
+                except Exception:
+                    print(f"Initializing data payload variable: '{data_variable_key}'")
+                    Variable.set(data_variable_key, None, serialize_json=True)
+        Variable.set(runtime_variable_key, initial_info, serialize_json=True)
+        print("Successfully initialized all variables.")
+    else:
+        print("Runtime info already exists. No action needed.")
+
+def create_dag_for_pipeline(sink_view_name, sink_view_meta):
+    """
+    Factory function to create a stateful, decoupled DAG for a sink view.
+    """
+    dag_id = f"pipeline_for_{sink_view_name}"
+
+    views_in_pipeline = {sink_view_name}
+    views_to_process = [sink_view_name]
+    while views_to_process:
+        current_view = views_to_process.pop(0)
+        dependencies = DSL_METADATA["views"][current_view].get("depends_on", [])
+        for dep in dependencies:
+            if dep not in views_in_pipeline:
+                views_in_pipeline.add(dep)
+                views_to_process.append(dep)
+
+    all_lags_seconds = [_parse_target_lag(DSL_METADATA["views"][v]["target_lag"])['seconds'] for v in views_in_pipeline]
+    base_refresh_rate_seconds = _calculate_gcd_for_list(all_lags_seconds) or _parse_target_lag(sink_view_meta["target_lag"])['seconds']
+
+    with DAG(
+        dag_id=dag_id,
+        max_active_runs=1,
+        start_date=pendulum.datetime(2025, 1, 1, tz="UTC"),
+        schedule=timedelta(seconds=base_refresh_rate_seconds),
+        catchup=False,
+        tags=['compiler-generated', 'stateful-pipeline']
+    ) as dag:
+
+        setup_task = PythonOperator(
+            task_id='setup_runtime_information',
+            python_callable=setup_runtime_information,
+            op_kwargs={'dag_id': dag.dag_id, 'views_in_pipeline': views_in_pipeline}
+        )
+
+        tasks = {}
+
+        def create_task_and_dependencies(view_name):
+            if view_name in tasks:
+                return
+
+            view_meta = DSL_METADATA["views"][view_name]
+
+            for dep_name in view_meta.get("depends_on", []):
+                create_task_and_dependencies(dep_name)
+
+            task_trigger_rule = TriggerRule.ALL_DONE if view_meta.get("depends_on") else TriggerRule.ALL_SUCCESS
+
+            tasks[view_name] = execute_view_logic_stateful.override(
+                task_id=f"execute_{view_name}",
+                trigger_rule=task_trigger_rule
+            )(
+                view_name=view_name,
+                dag_id=dag.dag_id,
+                base_refresh_rate_seconds=base_refresh_rate_seconds
+            )
+
+            for dep_name in view_meta.get("depends_on", []):
+                tasks[dep_name] >> tasks[view_name]
+
+        create_task_and_dependencies(sink_view_name)
+
+        root_tasks = [task for view, task in tasks.items() if not DSL_METADATA["views"][view].get("depends_on")]
+        if root_tasks:
+            setup_task >> root_tasks
+
+    return dag
+
+for view_name, view_meta in DSL_METADATA["views"].items():
+    if view_meta["materialize"]["type"] == "sink":
+        globals()[f"dag_for_{view_name}"] = create_dag_for_pipeline(view_name, view_meta)
+
